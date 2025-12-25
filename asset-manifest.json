@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/stock-tycoon/static/css/main.e6c13ad2.css",
+    "main.js": "/stock-tycoon/static/js/main.b619edde.js",
+    "static/js/453.a70d1d12.chunk.js": "/stock-tycoon/static/js/453.a70d1d12.chunk.js",
+    "index.html": "/stock-tycoon/index.html",
+    "main.e6c13ad2.css.map": "/stock-tycoon/static/css/main.e6c13ad2.css.map",
+    "main.b619edde.js.map": "/stock-tycoon/static/js/main.b619edde.js.map",
+    "453.a70d1d12.chunk.js.map": "/stock-tycoon/static/js/453.a70d1d12.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.e6c13ad2.css",
+    "static/js/main.b619edde.js"
+  ]
+}
