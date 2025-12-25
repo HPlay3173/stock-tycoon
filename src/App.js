@@ -919,4 +919,4 @@ const StockTradingTycoon = () => {
   );
 };
 
-export default App;
+export default StockTradingTycoon;
