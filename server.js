@@ -10,14 +10,14 @@ const port = process.env.PORT || 5000;
 
 // 1. CORS 설정: 모든 주소(origin)에서의 요청 허용
 app.use(cors({
-    origin: true,  // 들어오는 요청의 출처를 무조건 허용
-    credentials: true, // 인증 정보(쿠키 등) 포함 허용
+    origin: true,
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// 2. Preflight(예비 요청) 처리: 브라우저가 먼저 보내는 신호(OPTIONS)에 대해 OK 응답
-app.options('*', cors());
+// 2. Preflight(예비 요청) 처리: '*' 대신 정규식 /(.*)/ 사용
+app.options(/(.*)/, cors());
 
 app.use(express.json());
 
