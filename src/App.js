@@ -22,13 +22,14 @@ import {
   getFirestore, doc, setDoc, getDoc, onSnapshot, collection, runTransaction 
 } from 'firebase/firestore';
 
-// --- 상수 및 설정 ---
+// --- 상수 및 초기 데이터 ---
 const INITIAL_CASH = 10000000;
 const MAX_HISTORY = 60; 
 const MAX_STORED_HISTORY = 600;
 const RECENT_VIEW_COUNT = 60;
+const SERVER_URL = "http://localhost:5000"; // 서버 주소 추가
 
-// 사용자님이 제공해주신 Firebase 설정값으로 고정
+// --- 1. Firebase 설정 ---
 const firebaseConfig = {
   apiKey: "AIzaSyDVWurbFRuUdotVWffdPqPkLdlnXu3yVPc",
   authDomain: "stock-tycoon-a5444.firebaseapp.com",
@@ -49,10 +50,11 @@ try {
 }
 
 const APP_ID = 'stock-tycoon-a5444';
-const USER_COLLECTION = 'users_final'; 
-const LEADERBOARD_COLLECTION = 'leaderboard_final';
-const MARKET_COLLECTION = 'market_final';
-const Gemini_API_KEY = "AIzaSyC0HH0CbfzfdmplrdyacKBWdOK4Lk1rM3Q"; 
+
+// ★ [수정됨] 서버와 이름을 똑같이 맞춰야 연결됩니다 ★
+const MARKET_COLLECTION = 'market_final';      
+const USER_COLLECTION = 'users_final';         
+const LEADERBOARD_COLLECTION = 'leaderboard_final'; 
 
 // 초기 종목 데이터
 const INITIAL_STOCKS_DATA = [
@@ -63,31 +65,7 @@ const INITIAL_STOCKS_DATA = [
   { id: 'BTC', name: '비트코인', price: 45000000, volatility: 0.050, held: 0, avgPrice: 0, trend: 0, sector: '가상화폐', color: '#8B5CF6', newsEffect: null },
 ];
 
-// --- 백업 뉴스 데이터 ---
-const BACKUP_NEWS_DB = {
-  '반도체': {
-    good: ["삼성전자 1나노 공정 로드맵 발표", "반도체 수출액 역대 최고", "AI 서버 투자 확대로 메모리 품귀"],
-    bad: ["글로벌 경기 침체로 수요 급감", "대중국 반도체 수출 규제 강화", "D램 가격 3개월 연속 하락"]
-  },
-  '플랫폼': {
-    good: ["카카오 신규 AI 서비스 대박", "네이버 검색 광고 매출 호조", "K-웹툰 글로벌 흥행 돌풍"],
-    bad: ["공정위 독과점 규제 법안 발의", "데이터센터 화재로 서비스 장애", "광고 시장 위축 우려"]
-  },
-  '자동차': {
-    good: ["현대차 북미 시장 점유율 상승", "기아 영업이익 사상 최대", "자율주행 레벨3 상용화 임박"],
-    bad: ["미국 IRA 보조금 제외 우려", "노조 파업으로 생산 차질", "차량용 반도체 수급 불안"]
-  },
-  '2차전지': {
-    good: ["K-배터리 미국 시장 점유율 1위", "대규모 양극재 장기 공급 계약", "전고체 배터리 기술 개발 가속"],
-    bad: ["전기차 수요 둔화(Chasm) 현실화", "리튬 가격 폭락으로 수익성 악화", "중국 배터리 저가 공세 심화"]
-  },
-  '가상화폐': {
-    good: ["비트코인 현물 ETF 승인 기대감", "연준 금리 인하 시그널", "반감기 도래로 공급 축소"],
-    bad: ["대형 거래소 파산 위기설", "각국 정부 강력 규제 예고", "해킹으로 대규모 코인 도난"]
-  }
-};
-
-// --- 유틸리티: ID 생성기 (중복 방지) ---
+// --- 유틸리티 ---
 let idCounter = 0;
 const generateId = (prefix = 'id') => {
   idCounter += 1;
@@ -251,6 +229,26 @@ const RandomBoxModal = ({ onClose, onOpen }) => {
   );
 };
 
+const ServerWaitingScreen = () => (
+  <div className="fixed inset-0 z-[9999] bg-[#111]/95 backdrop-blur-md flex flex-col items-center justify-center text-center p-6 animate-fade-in">
+    <div className="bg-[#202025] p-8 rounded-[32px] border border-gray-800 shadow-2xl max-w-md w-full flex flex-col items-center">
+      <div className="w-20 h-20 bg-red-500/10 rounded-full flex items-center justify-center mb-6 animate-pulse">
+        <Server size={40} className="text-red-500" />
+      </div>
+      <h2 className="text-2xl font-bold text-white mb-3">서버 연결 대기 중</h2>
+      <p className="text-gray-400 text-sm mb-8 leading-relaxed">
+        주식 시장 서버가 닫혀있습니다.<br/>
+        호스트가 <code className="bg-gray-800 px-2 py-1 rounded text-yellow-400 font-mono text-xs">node server.js</code>를<br/>
+        실행하면 자동으로 게임이 시작됩니다.
+      </p>
+      <div className="flex items-center gap-3 text-xs text-gray-600 bg-black/30 px-4 py-2 rounded-full">
+        <Activity size={14} className="animate-spin" />
+        <span>서버 신호를 찾는 중...</span>
+      </div>
+    </div>
+  </div>
+);
+
 const StockTradingTycoon = () => {
   // App State
   const [user, setUser] = useState(null);
@@ -276,9 +274,13 @@ const StockTradingTycoon = () => {
   const [lastBoxTime, setLastBoxTime] = useState(0);
   const [leaderboard, setLeaderboard] = useState([]);
   const [chartScale, setChartScale] = useState('1m'); 
+  const [serverStatus, setServerStatus] = useState(false);
   
   const [localNewsEffects, setLocalNewsEffects] = useState({});
   const lastProcessedNewsId = useRef(null);
+
+  // 서버 연결 상태 체크를 위한 Heartbeat
+  const lastServerUpdate = useRef(Date.now());
 
   const stocksRef = useRef(stocks);
   useEffect(() => { stocksRef.current = stocks; }, [stocks]);
@@ -307,247 +309,46 @@ const StockTradingTycoon = () => {
     setTimeout(() => setFloatingTexts(prev => prev.filter(ft => ft.id !== id)), 1200);
   };
 
-  // 데이터 저장 (서버가 없으므로 각 클라이언트가 자신의 상태를 저장)
-  const saveUserData = async (currentCash, currentStocks, currentPrincipal) => {
-      if (!user || !db || !isDataLoaded) return;
-      try {
-          const portfolio = currentStocks.map(s => ({ id: s.id, held: s.held, avgPrice: s.avgPrice }));
-          const total = currentCash + currentStocks.reduce((acc, s) => acc + (s.price * s.held), 0);
-          
-          await setDoc(doc(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'data', 'profile'), { 
-              cash: currentCash, 
-              principal: currentPrincipal, 
-              portfolio, 
-              totalAsset: total, 
-              updatedAt: Date.now(), 
-              userId: user.email ? user.email.split('@')[0] : 'User' 
-          }, { merge: true });
-
-          await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', LEADERBOARD_COLLECTION, user.uid), { 
-              userId: user.email ? user.email.split('@')[0] : 'User', 
-              totalAsset: total, 
-              updatedAt: Date.now() 
-          });
-      } catch(e) {
-          console.error("Save Error", e);
-      }
-  };
-
-  const checkPendingOrders = (currentStocks) => {
-    let executed = false;
-    let newCash = cash;
-    let newStocksState = [...currentStocks];
-    let remainingOrders = [];
-
-    pendingOrders.forEach(order => {
-      const stock = newStocksState.find(s => s.id === order.stockId);
-      if (!stock) return;
-      let isMatch = false;
-      if (order.type === 'buy' && stock.price <= order.price) isMatch = true;
-      if (order.type === 'sell' && stock.price >= order.price) isMatch = true;
-
-      if (isMatch) {
-        const cost = stock.price * order.amount;
-        if (order.type === 'buy') {
-          if (newCash >= cost) {
-            newCash -= cost;
-            const newHeld = stock.held + order.amount;
-            const newAvgPrice = ((stock.avgPrice * stock.held) + cost) / newHeld;
-            stock.held = newHeld;
-            stock.avgPrice = newAvgPrice;
-            showToast(`${stock.name} ${order.amount}주 지정가 매수 체결`, 'success');
-            executed = true;
-          } else { remainingOrders.push(order); }
-        } else if (order.type === 'sell') {
-          if (stock.held >= order.amount) {
-            newCash += cost;
-            stock.held -= order.amount;
-            if (stock.held === 0) stock.avgPrice = 0;
-            showToast(`${stock.name} ${order.amount}주 지정가 매도 체결`, 'success');
-            executed = true;
-          } else { remainingOrders.push(order); }
-        }
-      } else { remainingOrders.push(order); }
-    });
-
-    if (executed) {
-      setCash(newCash);
-      setStocks(newStocksState);
-      setPendingOrders(remainingOrders);
-      const totalHeld = newStocksState.reduce((acc, s) => acc + s.held, 0);
-      let newPrincipal = principal;
-      if (totalHeld === 0) {
-          newPrincipal = newCash;
-          setPrincipal(newCash);
-      }
-      saveUserData(newCash, newStocksState, newPrincipal);
-    }
-  };
-
-  const generateGeminiNews = async (targetStock) => {
-    try {
-      const prompt = `주식 뉴스 속보: ${targetStock.name} (${targetStock.sector}) ${Math.random() > 0.5 ? '호재' : '악재'}. JSON {"headline": "...", "type": "good"|"bad"}. 한국어 기사체.`;
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${Gemini_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      });
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      return JSON.parse(text.replace(/```json|```/g, '').trim());
-    } catch (e) {
-      const isGood = Math.random() > 0.5;
-      const list = BACKUP_NEWS_DB[targetStock.sector] || BACKUP_NEWS_DB['반도체'];
-      const newsList = isGood ? list.good : list.bad;
-      return { headline: newsList[Math.floor(Math.random() * newsList.length)], type: isGood ? 'good' : 'bad' };
-    }
-  };
-
-  // 주가 변동 및 뉴스 동기화 (클라이언트가 호스트 역할 수행 - 간단한 P2P 로직)
-  // 가장 먼저 접속한 사람이 '시장(Market)' 데이터를 업데이트합니다.
-  const updateMarket = async () => {
-    if (!user || !db) return;
-    
-    const marketDocRef = doc(db, 'artifacts', APP_ID, 'public', 'data', MARKET_COLLECTION, 'main');
-    
-    try {
-      await runTransaction(db, async (transaction) => {
-        const sfDoc = await transaction.get(marketDocRef);
-        
-        let data;
-        if (!sfDoc.exists()) {
-           data = { stocks: INITIAL_STOCKS_DATA, gameTime: 0, lastUpdated: 0, newsLogs: [] };
-        } else {
-           data = sfDoc.data();
-        }
-        
-        const now = Date.now();
-        // 1.5초 이상 업데이트가 없으면 내가 업데이트 (Tick)
-        if (now - data.lastUpdated > 1500) {
-            let newStocks = data.stocks.map(stock => {
-                const currentTrend = (stock.trend || 0) * 0.98;
-                const baseRandom = Math.random() - 0.5;
-                const biasedRandom = baseRandom + (currentTrend * 0.5);
-                const changePercent = biasedRandom * stock.volatility * 2;
-                let newPrice = stock.price * (1 + changePercent);
-                if (newPrice < 100) newPrice = 100;
-                return { ...stock, price: newPrice, trend: currentTrend };
-            });
-
-            let updatePayload = {
-                stocks: newStocks,
-                gameTime: (data.gameTime || 0) + 1,
-                lastUpdated: now,
-                newsLogs: data.newsLogs || []
-            };
-
-            // 뉴스 생성 (20초마다 30% 확률)
-            const lastNewsTime = data.lastNewsTime || 0;
-            if (now - lastNewsTime > 20000 && Math.random() < 0.3) {
-                 // 여기서는 동기적으로 처리해야 하므로 백업 뉴스 DB 활용 (API 호출 딜레이 방지)
-                 const targetStock = newStocks[Math.floor(Math.random() * newStocks.length)];
-                 const isGood = Math.random() > 0.5;
-                 const list = BACKUP_NEWS_DB[targetStock.sector] || BACKUP_NEWS_DB['반도체'];
-                 const headline = (isGood ? list.good : list.bad)[Math.floor(Math.random() * list.good.length)]; // Random Pick
-                 const newsData = { headline, type: isGood ? 'good' : 'bad' };
-                 
-                 const impact = (Math.random() * 0.5 + 0.3) * (isGood ? 1 : -1);
-                 updatePayload.stocks = newStocks.map(s => s.id === targetStock.id ? { 
-                    ...s, 
-                    trend: Math.max(-1, Math.min(1, s.trend + impact)), 
-                    newsEffect: newsData.type 
-                 } : s);
-                 
-                 const newNewsItem = {
-                    id: generateId('news'),
-                    text: `[속보] ${targetStock.name}, ${newsData.headline}`,
-                    type: newsData.type,
-                    time: new Date().toLocaleTimeString('ko-KR', {hour: '2-digit', minute:'2-digit'})
-                 };
-                 
-                 updatePayload.newsLogs = [newNewsItem, ...(updatePayload.newsLogs)].slice(0, 20);
-                 updatePayload.latestNews = newNewsItem;
-                 updatePayload.lastNewsTime = now;
-            }
-            
-            // 히스토리 업데이트 (서버리스 환경이라 DB에 저장)
-            let newHistory = data.history || {};
-            if(!newHistory.SAMS) { // 초기화
-                newStocks.forEach(s => newHistory[s.id] = []);
-            }
-            newStocks.forEach(s => {
-                if(!newHistory[s.id]) newHistory[s.id] = [];
-                newHistory[s.id].push({time: updatePayload.gameTime, price: s.price});
-                if(newHistory[s.id].length > MAX_STORED_HISTORY) newHistory[s.id].shift();
-            });
-            updatePayload.history = newHistory;
-
-            transaction.set(marketDocRef, updatePayload, { merge: true });
-        }
-      });
-    } catch (e) {
-      // console.log("Contention", e);
-    }
-  };
-
-  const handleTrade = (type, e) => {
+  // ★ [수정됨] 거래 로직: 서버로 요청 보냄 ★
+  const handleTrade = async (type, e) => {
+    if (!user) return;
     const stock = stocks.find(s => s.id === selectedStockId);
-    // 모바일 터치 대응
     const clickX = e?.clientX || window.innerWidth / 2;
     const clickY = e?.clientY || window.innerHeight / 2;
 
-    if (orderMode === 'limit') {
-      if (type === 'sell' && stock.held < tradeAmount) { showToast('보유 주식이 부족합니다', 'error'); return; }
-      if (type === 'buy' && cash < targetPrice * tradeAmount) { showToast('현금이 부족합니다', 'error'); return; }
-      const newOrder = { id: generateId('order'), stockId: stock.id, stockName: stock.name, type, price: targetPrice, amount: tradeAmount, time: new Date().toLocaleTimeString('ko-KR', {hour: '2-digit', minute:'2-digit'}) };
-      setPendingOrders(prev => [...prev, newOrder]);
-      showToast(`${stock.name} 지정가 주문 접수`, 'success');
-      setActiveTab('orders');
-      return;
-    }
-
-    const cost = stock.price * tradeAmount;
-    if (type === 'buy') {
-      if (cash >= cost) {
-        const newCash = cash - cost;
-        setCash(newCash);
-        const newStocksState = stocks.map(s => { 
-            if (s.id === selectedStockId) { 
-                const newHeld = s.held + tradeAmount; 
-                const newAvgPrice = ((s.avgPrice * s.held) + cost) / newHeld; 
-                return { ...s, held: newHeld, avgPrice: newAvgPrice }; 
-            } return s; 
+    try {
+        const response = await fetch(`${SERVER_URL}/api/trade`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                uid: user.uid,
+                stockId: stock.id,
+                type: type,
+                amount: tradeAmount
+            })
         });
-        setStocks(newStocksState);
-        triggerFloatingText(clickX, clickY, `-${Math.floor(cost).toLocaleString()}`, 'loss');
-        saveUserData(newCash, newStocksState, principal);
-      } else { showToast('계좌 잔액 부족', 'error'); }
-    } else {
-      if (stock.held >= tradeAmount) {
-        const avgCost = stock.avgPrice * tradeAmount;
-        const revenue = stock.price * tradeAmount;
-        const profit = revenue - avgCost;
-        const newCash = cash + revenue;
-        setCash(newCash);
+
+        const result = await response.json();
         
-        const newStocksState = stocks.map(s => { 
-            if (s.id === selectedStockId) { 
-                const newHeld = s.held - tradeAmount; 
-                return { ...s, held: newHeld, avgPrice: newHeld === 0 ? 0 : s.avgPrice }; 
-            } return s; 
-        });
-        setStocks(newStocksState);
-
-        const totalHeld = newStocksState.reduce((acc, s) => acc + s.held, 0);
-        let newPrincipal = principal;
-        if (totalHeld === 0) {
-          newPrincipal = newCash;
-          setPrincipal(newCash);
+        if (result.success) {
+            // 성공 시 시각 효과만 처리 (데이터는 Firebase 구독으로 자동 갱신됨)
+            if (type === 'sell') {
+                const profit = (stock.price * tradeAmount) - (stock.avgPrice * tradeAmount);
+                if (profit > 0) {
+                     triggerConfetti(clickX, clickY);
+                     triggerFloatingText(clickX, clickY, `+${Math.floor(profit).toLocaleString()}`, 'profit');
+                } else {
+                     triggerFloatingText(clickX, clickY, `${Math.floor(profit).toLocaleString()}`, 'loss');
+                }
+            } else {
+                 triggerFloatingText(clickX, clickY, `-${Math.floor(stock.price * tradeAmount).toLocaleString()}`, 'loss');
+            }
+            showToast(result.msg, 'success');
+        } else {
+            showToast(result.msg, 'error');
         }
-        
-        if (profit > 0) { triggerConfetti(clickX, clickY); triggerFloatingText(clickX, clickY, `+${Math.floor(profit).toLocaleString()}`, 'profit'); if (profit > 1000000) showToast(`대박! ${Math.floor(profit).toLocaleString()}원 수익!`, 'jackpot'); } else { triggerFloatingText(clickX, clickY, `${Math.floor(profit).toLocaleString()}`, 'loss'); }
-        saveUserData(newCash, newStocksState, newPrincipal);
-      } else { showToast('보유 수량이 부족합니다', 'error'); }
+    } catch (e) {
+        showToast("서버 통신 실패", 'error');
     }
   };
 
@@ -561,10 +362,22 @@ const StockTradingTycoon = () => {
   };
 
   const openRandomBox = (reward) => {
-    const newCash = cash + reward; setCash(newCash); setLastBoxTime(Date.now()); setShowRandomBox(false);
-    showToast(`${reward.toLocaleString()}원 획득!`, 'gift'); triggerConfetti(window.innerWidth/2, window.innerHeight/2);
-    const totalHeld = stocks.reduce((acc, s) => acc + s.held, 0); if (totalHeld === 0) setPrincipal(newCash);
-    saveUserData(newCash, stocks, principal); // 랜덤박스도 저장
+    // 랜덤박스도 서버로 보내서 처리하면 좋지만, 일단 로컬에서 처리하고 저장
+    // (보안을 위해선 이것도 서버 API로 만드는 게 좋습니다)
+    const newCash = cash + reward; 
+    setCash(newCash); 
+    setLastBoxTime(Date.now()); 
+    setShowRandomBox(false);
+    showToast(`${reward.toLocaleString()}원 획득!`, 'gift'); 
+    triggerConfetti(window.innerWidth/2, window.innerHeight/2);
+    
+    // DB 직접 저장 (서버 모드에서도 보너스는 일단 직접 저장 허용)
+    const portfolio = stocks.map(s => ({ id: s.id, held: s.held, avgPrice: s.avgPrice }));
+    setDoc(doc(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'data', 'profile'), {
+         cash: newCash,
+         portfolio,
+         updatedAt: Date.now()
+    }, { merge: true });
   };
   
   const handleTradeClick = (type, e) => handleTrade(type, e);
@@ -615,13 +428,18 @@ const StockTradingTycoon = () => {
     if (stock) setTargetPrice(Math.floor(stock.price));
   }, [selectedStockId]);
 
-  // --- MARKET SYNC & TICKER LOOP ---
+  // --- SERVER SYNC (★ 여기가 가장 중요함 - 경로 수정됨 ★) ---
   useEffect(() => {
     if (!user || !db) return;
     
-    // 1. Subscribe to Market Data
+    // ★ 서버가 업데이트하는 경로와 정확히 일치해야 함 (market_final)
     const marketDocRef = doc(db, 'artifacts', APP_ID, 'public', 'data', MARKET_COLLECTION, 'main');
+    
     const unsubscribe = onSnapshot(marketDocRef, (docSnap) => {
+      // 데이터 수신 시 시간 갱신 (Heartbeat)
+      lastServerUpdate.current = Date.now();
+      setServerStatus(true); // 데이터가 들어오면 무조건 Live
+
       if (docSnap.exists()) {
         const data = docSnap.data();
 
@@ -666,57 +484,61 @@ const StockTradingTycoon = () => {
            }
         }
       }
+    }, (error) => {
+       console.error("Sync Error:", error);
+       setServerStatus(false);
     });
+    return () => unsubscribe();
+  }, [db, user, localNewsEffects]);
 
-    // 2. Run Ticker Loop (Everyone tries, Firestore Transaction handles concurrency)
+  // Server Heartbeat Checker (5초간 데이터 없으면 연결 끊김 처리)
+  useEffect(() => {
     const interval = setInterval(() => {
-        updateMarket(); // Try to update market
-        if (pendingOrders.length > 0) {
-            checkPendingOrders(stocksRef.current);
-        }
+       if (Date.now() - lastServerUpdate.current > 5000) {
+           setServerStatus(false);
+       }
     }, 1000);
-
-    return () => {
-        unsubscribe();
-        clearInterval(interval);
-    };
-  }, [db, user, localNewsEffects, pendingOrders]);
+    return () => clearInterval(interval);
+  }, []);
 
   // Load Data on Login
   useEffect(() => {
     if (!user || !db) return;
     const loadUserData = async () => {
         try {
+            // ★ 유저 경로도 서버와 일치하게 수정됨 (users_final)
             const userDocRef = doc(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'data', 'profile');
-            const docSnap = await getDoc(userDocRef);
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                if (data.cash) setCash(data.cash);
-                if (data.principal) setPrincipal(data.principal);
-                if (data.portfolio) {
-                    setStocks(prev => prev.map(st => {
-                        const sv = data.portfolio.find(p=>p.id===st.id);
-                        return sv ? {...st, held: sv.held, avgPrice: sv.avgPrice} : st;
-                    }));
+            
+            // 실시간 리스너로 변경 (서버가 내 잔액을 바꾸면 즉시 반영)
+            onSnapshot(userDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.cash) setCash(data.cash);
+                    if (data.principal) setPrincipal(data.principal);
+                    if (data.portfolio) {
+                        setStocks(prev => prev.map(st => {
+                            const sv = data.portfolio.find(p=>p.id===st.id);
+                            return sv ? {...st, held: sv.held, avgPrice: sv.avgPrice} : st;
+                        }));
+                    }
+                } else {
+                    // 데이터 없으면 초기화
+                    setDoc(userDocRef, { 
+                      cash: INITIAL_CASH, 
+                      portfolio: [], 
+                      userId: user.email ? user.email.split('@')[0] : 'User',
+                      totalAsset: INITIAL_CASH 
+                    });
                 }
-            }
+                setIsDataLoaded(true);
+            });
+
         } catch (e) { console.error("Load Error", e); }
-        finally {
-            setIsDataLoaded(true); // 로딩 완료
-        }
     };
     loadUserData();
   }, [user, db]);
 
-  // Auto Save
-  useEffect(() => {
-    if (!user || !db || !isDataLoaded) return; 
-    const save = setTimeout(async () => {
-        saveUserData(cash, stocks, principal);
-    }, 3000); 
-    return () => clearTimeout(save);
-  }, [cash, stocks, principal, user, db, isDataLoaded]);
-
+  // 랭킹 구독 (경로 일치)
   useEffect(() => {
     if (!user || !db) return;
     return onSnapshot(collection(db, 'artifacts', APP_ID, 'public', 'data', LEADERBOARD_COLLECTION), (s) => {
@@ -725,7 +547,6 @@ const StockTradingTycoon = () => {
         setLeaderboard(r.slice(0, 50));
     });
   }, [user, db]);
-
 
   // --- Render Variables ---
   const selectedStock = stocks.find(s => s.id === selectedStockId);
@@ -745,6 +566,10 @@ const StockTradingTycoon = () => {
 
   return (
     <div className={`flex flex-col h-screen bg-[#111111] text-white font-sans overflow-hidden select-none relative transition-colors duration-300 ${screenFlash === 'good' ? 'flash-good' : screenFlash === 'bad' ? 'flash-bad' : ''}`}>
+      
+      {!serverStatus && (
+        <ServerWaitingScreen />
+      )}
       
       {particles.map(p => <ConfettiParticle key={p.id} x={p.x} y={p.y} color={p.color} />)}
       {floatingTexts.map(ft => <FloatingText key={ft.id} x={ft.x} y={ft.y} text={ft.text} type={ft.type} />)}
