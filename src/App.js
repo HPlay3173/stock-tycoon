@@ -27,7 +27,7 @@ const INITIAL_CASH = 10000000;
 const MAX_HISTORY = 60; 
 const MAX_STORED_HISTORY = 600;
 const RECENT_VIEW_COUNT = 60;
-const SERVER_URL = "http://localhost:5000"; // 서버 주소 추가
+const SERVER_URL = "https://stock-tycoon-server.onrender.com"; // 서버 주소 추가
 
 // --- 1. Firebase 설정 ---
 const firebaseConfig = {
