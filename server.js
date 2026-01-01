@@ -45,7 +45,7 @@ const genAI = new GoogleGenerativeAI(apiKey);
 
 // 모델 설정 (사용자 요청: gemma-3-12b 사용)
 const model = genAI.getGenerativeModel({ 
-    model: "gemma-3-12b"
+    model: "gemma-3-12b-it"
 });
 
 // 백업 뉴스
