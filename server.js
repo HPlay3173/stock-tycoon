@@ -6,18 +6,12 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const app = express();
 const port = process.env.PORT || 5000;
 
-// ★ [핵심] CORS 라이브러리 대신 "수동"으로 헤더 강제 주입
-// 이 코드는 모든 도메인, 모든 요청을 무조건 허용합니다.
+// ★ CORS 설정 (모든 요청 허용)
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*"); // 모든 곳에서 접속 허용
+  res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  
-  // 브라우저가 보내는 사전 요청(Preflight)에 대해 즉시 OK 응답
-  if (req.method === 'OPTIONS') {
-    return res.status(200).send();
-  }
-  
+  if (req.method === 'OPTIONS') return res.status(200).send();
   next();
 });
 
@@ -49,9 +43,9 @@ const LEADERBOARD_COLLECTION = 'leaderboard_final';
 const apiKey = process.env.GEMINI_API_KEY;
 const genAI = new GoogleGenerativeAI(apiKey);
 
-// 모델 설정
+// 모델 설정 (사용자 요청: gemma-3-12b 사용)
 const model = genAI.getGenerativeModel({ 
-    model: "gemma-3-12b-it" 
+    model: "gemma-3-12b"
 });
 
 // 백업 뉴스
@@ -95,10 +89,12 @@ setInterval(async () => {
 
   serverState.gameTime++;
 
+  // 25초마다 40% 확률로 뉴스 생성 시도
   if (serverState.gameTime % 25 === 0 && Math.random() < 0.4) {
     await generateServerNews();
   }
 
+  // Firebase DB 업데이트
   try {
       await db.collection('artifacts').doc('stock-tycoon-a5444').collection('public').doc('data')
         .collection(MARKET_COLLECTION).doc('main').set({
@@ -122,16 +118,41 @@ async function generateServerNews() {
 
   try {
     if (apiKey) {
-        const prompt = `주식 뉴스 속보. 대상: ${target.name}. 상황: 호재/악재 랜덤. JSON 포맷 {"headline": "...", "type": "good"|"bad"}`;
+        // Gemma 모델을 위한 강력한 프롬프트
+        const prompt = `
+          주식 시장 뉴스 속보를 생성하라.
+          대상: ${target.name} (${target.sector})
+          상황: 호재 또는 악재 중 하나를 랜덤하게 선택.
+          
+          [제약 사항]
+          1. 반드시 유효한 JSON 형식으로만 응답하라.
+          2. 설명이나 잡담은 일절 금지한다.
+          
+          [JSON 형식]
+          {
+            "headline": "기사 제목 (한글, 30자 이내)",
+            "type": "good" 또는 "bad"
+          }
+        `;
+        
         const result = await model.generateContent(prompt);
-        const text = result.response.text().replace(/```json|```/g, "").trim();
-        newsData = JSON.parse(text);
-        console.log(`🤖 AI News:`, newsData.headline);
+        const text = result.response.text();
+        
+        // JSON 추출 로직 (Gemma가 앞뒤에 잡담을 붙여도 처리 가능하도록)
+        const jsonMatch = text.match(/\{[\s\S]*\}/); 
+        
+        if (!jsonMatch) {
+            console.error("Raw Output:", text);
+            throw new Error("JSON 형식을 찾을 수 없음");
+        }
+        
+        newsData = JSON.parse(jsonMatch[0]);
+        console.log(`🤖 AI News (${target.name}):`, newsData.headline);
     } else {
         throw new Error("API 키 없음");
     }
   } catch (e) {
-    console.log(`⚠️ 뉴스 오류 -> 백업 사용`);
+    console.error(`⚠️ 뉴스 생성 실패 (${e.message}) -> 백업 사용`);
     const backup = BACKUP_NEWS[Math.floor(Math.random() * BACKUP_NEWS.length)];
     newsData = {
         headline: `${target.name}, ${backup.headline}`,

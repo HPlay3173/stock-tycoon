@@ -19,7 +19,7 @@ import {
   signInAnonymously
 } from 'firebase/auth';
 import { 
-  getFirestore, doc, setDoc, getDoc, onSnapshot, collection, runTransaction 
+  getFirestore, doc, setDoc, getDoc, onSnapshot, collection, runTransaction, addDoc, deleteDoc 
 } from 'firebase/firestore';
 
 // --- 상수 및 초기 데이터 ---
@@ -27,7 +27,7 @@ const INITIAL_CASH = 10000000;
 const MAX_HISTORY = 60; 
 const MAX_STORED_HISTORY = 600;
 const RECENT_VIEW_COUNT = 60;
-const SERVER_URL = "https://stock-tycoon-server.onrender.com"; // 서버 주소 추가
+const SERVER_URL = "https://stock-tycoon-server.onrender.com"; // 배포된 서버 주소
 
 // --- 1. Firebase 설정 ---
 const firebaseConfig = {
@@ -50,8 +50,6 @@ try {
 }
 
 const APP_ID = 'stock-tycoon-a5444';
-
-// ★ [수정됨] 서버와 이름을 똑같이 맞춰야 연결됩니다 ★
 const MARKET_COLLECTION = 'market_final';      
 const USER_COLLECTION = 'users_final';         
 const LEADERBOARD_COLLECTION = 'leaderboard_final'; 
@@ -278,6 +276,7 @@ const StockTradingTycoon = () => {
   
   const [localNewsEffects, setLocalNewsEffects] = useState({});
   const lastProcessedNewsId = useRef(null);
+  const processingOrdersRef = useRef(new Set()); // 중복 체결 방지용
 
   // 서버 연결 상태 체크를 위한 Heartbeat
   const lastServerUpdate = useRef(Date.now());
@@ -309,13 +308,42 @@ const StockTradingTycoon = () => {
     setTimeout(() => setFloatingTexts(prev => prev.filter(ft => ft.id !== id)), 1200);
   };
 
-  // ★ [수정됨] 거래 로직: 서버로 요청 보냄 ★
+  // ★ [수정됨] 거래 로직: 시장가(서버 전송) / 지정가(Firebase 저장) ★
   const handleTrade = async (type, e) => {
     if (!user) return;
     const stock = stocks.find(s => s.id === selectedStockId);
     const clickX = e?.clientX || window.innerWidth / 2;
     const clickY = e?.clientY || window.innerHeight / 2;
 
+    // 1. 지정가(Limit) 주문: Firebase에 저장
+    if (orderMode === 'limit') {
+      try {
+        const orderData = {
+          stockId: stock.id,
+          stockName: stock.name,
+          type: type, // 'buy' or 'sell'
+          price: targetPrice,
+          amount: tradeAmount,
+          createdAt: Date.now()
+        };
+        
+        await addDoc(collection(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'orders'), orderData);
+        
+        showToast(`${stock.name} ${targetPrice.toLocaleString()}원 ${type === 'buy' ? '매수' : '매도'} 예약 완료`, 'success');
+        triggerFloatingText(clickX, clickY, "예약됨", 'normal');
+      } catch (err) {
+        console.error("Order Save Error:", err);
+        showToast("예약 주문 저장 실패", 'error');
+      }
+      return; 
+    }
+
+    // 2. 시장가(Market) 주문: 즉시 서버로 전송
+    await executeMarketTrade(stock, type, tradeAmount, clickX, clickY);
+  };
+
+  // 실제 서버로 거래 요청을 보내는 함수 (시장가 / 예약 체결 공용)
+  const executeMarketTrade = async (stock, type, amount, fxX, fxY) => {
     try {
         const response = await fetch(`${SERVER_URL}/api/trade`, {
             method: 'POST',
@@ -324,35 +352,46 @@ const StockTradingTycoon = () => {
                 uid: user.uid,
                 stockId: stock.id,
                 type: type,
-                amount: tradeAmount
+                amount: amount
             })
         });
 
         const result = await response.json();
         
         if (result.success) {
-            // 성공 시 시각 효과만 처리 (데이터는 Firebase 구독으로 자동 갱신됨)
+            // 성공 시 시각 효과
             if (type === 'sell') {
-                const profit = (stock.price * tradeAmount) - (stock.avgPrice * tradeAmount);
+                const profit = (stock.price * amount) - (stock.avgPrice * amount);
                 if (profit > 0) {
-                     triggerConfetti(clickX, clickY);
-                     triggerFloatingText(clickX, clickY, `+${Math.floor(profit).toLocaleString()}`, 'profit');
+                     if(fxX && fxY) triggerConfetti(fxX, fxY);
+                     if(fxX && fxY) triggerFloatingText(fxX, fxY, `+${Math.floor(profit).toLocaleString()}`, 'profit');
                 } else {
-                     triggerFloatingText(clickX, clickY, `${Math.floor(profit).toLocaleString()}`, 'loss');
+                     if(fxX && fxY) triggerFloatingText(fxX, fxY, `${Math.floor(profit).toLocaleString()}`, 'loss');
                 }
             } else {
-                 triggerFloatingText(clickX, clickY, `-${Math.floor(stock.price * tradeAmount).toLocaleString()}`, 'loss');
+                 if(fxX && fxY) triggerFloatingText(fxX, fxY, `-${Math.floor(stock.price * amount).toLocaleString()}`, 'loss');
             }
-            showToast(result.msg, 'success');
+            if(fxX && fxY) showToast(result.msg, 'success'); // 예약 체결 시에는 토스트 안 띄우거나 다르게 처리할 수도 있음
         } else {
             showToast(result.msg, 'error');
+            throw new Error(result.msg); // 에러 전파
         }
     } catch (e) {
-        showToast("서버 통신 실패", 'error');
+        console.error(e);
+        if(fxX && fxY) showToast(typeof e === 'string' ? e : "거래 실패", 'error');
+        throw e;
     }
   };
 
-  const cancelOrder = (orderId) => { setPendingOrders(prev => prev.filter(o => o.id !== orderId)); showToast('주문이 취소되었습니다', 'success'); };
+  const cancelOrder = async (orderId) => { 
+    if(!user) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'orders', orderId));
+      showToast('주문이 취소되었습니다', 'success'); 
+    } catch(e) {
+      showToast('취소 실패', 'error');
+    }
+  };
   
   const setAmountByPercent = (percent) => {
     const stock = stocks.find(s => s.id === selectedStockId);
@@ -362,8 +401,6 @@ const StockTradingTycoon = () => {
   };
 
   const openRandomBox = (reward) => {
-    // 랜덤박스도 서버로 보내서 처리하면 좋지만, 일단 로컬에서 처리하고 저장
-    // (보안을 위해선 이것도 서버 API로 만드는 게 좋습니다)
     const newCash = cash + reward; 
     setCash(newCash); 
     setLastBoxTime(Date.now()); 
@@ -371,7 +408,6 @@ const StockTradingTycoon = () => {
     showToast(`${reward.toLocaleString()}원 획득!`, 'gift'); 
     triggerConfetti(window.innerWidth/2, window.innerHeight/2);
     
-    // DB 직접 저장 (서버 모드에서도 보너스는 일단 직접 저장 허용)
     const portfolio = stocks.map(s => ({ id: s.id, held: s.held, avgPrice: s.avgPrice }));
     setDoc(doc(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'data', 'profile'), {
          cash: newCash,
@@ -428,17 +464,15 @@ const StockTradingTycoon = () => {
     if (stock) setTargetPrice(Math.floor(stock.price));
   }, [selectedStockId]);
 
-  // --- SERVER SYNC (★ 여기가 가장 중요함 - 경로 수정됨 ★) ---
+  // --- SERVER SYNC (Stocks & News) ---
   useEffect(() => {
     if (!user || !db) return;
     
-    // ★ 서버가 업데이트하는 경로와 정확히 일치해야 함 (market_final)
     const marketDocRef = doc(db, 'artifacts', APP_ID, 'public', 'data', MARKET_COLLECTION, 'main');
     
     const unsubscribe = onSnapshot(marketDocRef, (docSnap) => {
-      // 데이터 수신 시 시간 갱신 (Heartbeat)
       lastServerUpdate.current = Date.now();
-      setServerStatus(true); // 데이터가 들어오면 무조건 Live
+      setServerStatus(true); 
 
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -491,7 +525,7 @@ const StockTradingTycoon = () => {
     return () => unsubscribe();
   }, [db, user, localNewsEffects]);
 
-  // Server Heartbeat Checker (5초간 데이터 없으면 연결 끊김 처리)
+  // Server Heartbeat Checker
   useEffect(() => {
     const interval = setInterval(() => {
        if (Date.now() - lastServerUpdate.current > 5000) {
@@ -501,15 +535,13 @@ const StockTradingTycoon = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Load Data on Login
+  // Load User Data
   useEffect(() => {
     if (!user || !db) return;
     const loadUserData = async () => {
         try {
-            // ★ 유저 경로도 서버와 일치하게 수정됨 (users_final)
             const userDocRef = doc(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'data', 'profile');
             
-            // 실시간 리스너로 변경 (서버가 내 잔액을 바꾸면 즉시 반영)
             onSnapshot(userDocRef, (docSnap) => {
                 if (docSnap.exists()) {
                     const data = docSnap.data();
@@ -522,7 +554,6 @@ const StockTradingTycoon = () => {
                         }));
                     }
                 } else {
-                    // 데이터 없으면 초기화
                     setDoc(userDocRef, { 
                       cash: INITIAL_CASH, 
                       portfolio: [], 
@@ -538,7 +569,64 @@ const StockTradingTycoon = () => {
     loadUserData();
   }, [user, db]);
 
-  // 랭킹 구독 (경로 일치)
+  // ★ [추가됨] 예약 주문 목록 동기화 (Firebase <-> Client) ★
+  useEffect(() => {
+    if (!user || !db) return;
+    const ordersRef = collection(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'orders');
+    return onSnapshot(ordersRef, (snapshot) => {
+      const orders = [];
+      snapshot.forEach(doc => orders.push({ id: doc.id, ...doc.data() }));
+      // 시간순 정렬 (최신이 위로)
+      orders.sort((a, b) => b.createdAt - a.createdAt);
+      setPendingOrders(orders);
+    });
+  }, [user, db]);
+
+  // ★ [추가됨] 예약 주문 자동 체결 감시자 (Client Side Watcher) ★
+  useEffect(() => {
+    if (!user || !isDataLoaded || pendingOrders.length === 0) return;
+
+    pendingOrders.forEach(async (order) => {
+      // 이미 처리 중인 주문 건너뛰기
+      if (processingOrdersRef.current.has(order.id)) return;
+
+      const currentStock = stocks.find(s => s.id === order.stockId);
+      if (!currentStock) return;
+
+      let shouldExecute = false;
+      
+      // 매수 예약: 현재가가 목표가보다 낮거나 같으면 체결
+      if (order.type === 'buy' && currentStock.price <= order.price) {
+        shouldExecute = true;
+      }
+      // 매도 예약: 현재가가 목표가보다 높거나 같으면 체결
+      else if (order.type === 'sell' && currentStock.price >= order.price) {
+        shouldExecute = true;
+      }
+
+      if (shouldExecute) {
+        processingOrdersRef.current.add(order.id);
+        console.log(`⚡ 예약 주문 체결 시도: ${order.stockName} ${order.price}원`);
+
+        try {
+          // 1. 서버로 거래 요청
+          await executeMarketTrade(currentStock, order.type, order.amount, null, null);
+          
+          // 2. 성공 시 주문 삭제
+          await deleteDoc(doc(db, 'artifacts', APP_ID, USER_COLLECTION, user.uid, 'orders', order.id));
+          
+          showToast(`예약된 ${order.stockName} 주문이 체결되었습니다!`, 'success');
+        } catch (error) {
+          console.error("Auto Trade Error:", error);
+          // 실패 시 잠시 후 다시 시도할 수 있도록 처리 목록에서 제거
+          setTimeout(() => processingOrdersRef.current.delete(order.id), 5000);
+        }
+      }
+    });
+  }, [stocks, pendingOrders, user, isDataLoaded]);
+
+
+  // 랭킹 구독
   useEffect(() => {
     if (!user || !db) return;
     return onSnapshot(collection(db, 'artifacts', APP_ID, 'public', 'data', LEADERBOARD_COLLECTION), (s) => {
@@ -679,7 +767,7 @@ const StockTradingTycoon = () => {
                 <div className="flex justify-between items-center mb-2 px-1"><span className="text-sm font-bold text-gray-300">미체결 내역</span><span className="text-xs text-gray-500 bg-[#222] px-2 py-1 rounded-full">{pendingOrders.length}건</span></div>
                 {pendingOrders.length === 0 ? <div className="text-center py-16 text-gray-600 text-sm flex flex-col items-center gap-2"><CalendarClock className="opacity-30" size={40} /><p>대기 중인 주문이 없습니다</p></div> : pendingOrders.map(order => (
                     <div key={order.id} className="bg-[#202025] p-5 rounded-[24px] border border-gray-800 flex flex-col gap-3">
-                      <div className="flex justify-between items-center"><div className="flex items-center gap-2"><span className={`text-[11px] font-bold px-2 py-1 rounded-[8px] ${order.type === 'buy' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}`}>{order.type === 'buy' ? '매수' : '매도'}</span><span className="font-bold text-white">{order.stockName}</span></div><span className="text-xs text-gray-500 font-mono">{order.time}</span></div>
+                      <div className="flex justify-between items-center"><div className="flex items-center gap-2"><span className={`text-[11px] font-bold px-2 py-1 rounded-[8px] ${order.type === 'buy' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}`}>{order.type === 'buy' ? '매수' : '매도'}</span><span className="font-bold text-white">{order.stockName}</span></div><span className="text-xs text-gray-500 font-mono">{new Date(order.createdAt).toLocaleTimeString()}</span></div>
                       <div className="flex justify-between items-center px-1"><div className="text-sm"><span className="text-gray-400 mr-3 text-xs">목표가</span><span className="text-white font-bold">{order.price.toLocaleString()}원</span></div><div className="text-sm"><span className="text-gray-400 mr-3 text-xs">수량</span><span className="text-white font-bold">{order.amount}주</span></div></div>
                       <button onClick={() => cancelOrder(order.id)} className="w-full py-2.5 bg-[#222] hover:bg-[#333] text-gray-400 hover:text-white rounded-[12px] text-xs font-bold transition-colors">취소하기</button>
                     </div>
